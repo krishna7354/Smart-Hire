@@ -85,18 +85,26 @@ genai.configure(api_key=Config.GEMINI_API_KEY)
 
 class GeminiService:
     def __init__(self):
-        self.model_name = 'gemini-2.0-flash' 
+        # Priority list of models to try
+        self.models = [
+            'gemini-1.5-flash', 
+            'gemini-1.5-pro',
+            'gemini-pro'
+        ]
 
     def generate(self, prompt: str):
-        try:
-            model = genai.GenerativeModel(self.model_name)
-            response = model.generate_content(prompt)
-            return response.text
-        except Exception:
-            # Fallback
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
-            return response.text
+        last_error = None
+        # Try each model until one works
+        for model_name in self.models:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                return response.text
+            except Exception as e:
+                print(f"Model {model_name} failed: {e}")
+                last_error = e
+                continue
+        raise last_error # If all fail, raise error to trigger fallback questions
 
     def parse_resume_text(self, text: str):
         prompt = f"""
@@ -117,7 +125,9 @@ class GeminiService:
         }}
         """
         response = self.generate(prompt)
-        return json.loads(response.replace("```json", "").replace("```", "").strip())
+        # Clean potential markdown
+        clean_json = response.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_json)
 
 ai_service = GeminiService()
 
