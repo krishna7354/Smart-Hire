@@ -7,7 +7,7 @@ import axios from 'axios';
 import InterviewSession from './components/InterviewSession';
 
 // --- CONFIGURATION ---
-const API_BASE = 'http://localhost:8000/api';
+const API_BASE = 'https://smart-hire-ujyg.onrender.com/api';
 
 // --- COMPONENTS ---
 const Button = ({ children, onClick, variant = 'primary', className = '', disabled = false, type='button' }) => {

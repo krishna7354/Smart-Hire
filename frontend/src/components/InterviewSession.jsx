@@ -3,7 +3,7 @@ import { Mic, Video, Play, Square, Loader2, CheckCircle, ArrowLeft } from 'lucid
 import axios from 'axios';
 
 // IMPORTANT: Using the same port as SmartHire backend
-const API_BASE = 'http://localhost:8000/api/interview';
+const API_BASE = 'https://smart-hire-ujyg.onrender.com/api';
 
 const Card = ({ children, className = '' }) => (
   <div className={`bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6 shadow-xl ${className}`}>
