@@ -87,7 +87,7 @@ class GeminiService:
     def __init__(self):
         # Priority list of models to try
         self.models = [
-            'gemini-1.5-flash', 
+            'gemini-2.0-flash', 
             'gemini-1.5-pro',
             'gemini-pro'
         ]
