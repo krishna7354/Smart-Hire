@@ -11,7 +11,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip
 
 # 2. Install Google AI (The full image can handle the C++ build)
-RUN pip install --no-cache-dir google-generative-ai
+RUN pip install --no-cache-dir google-generativeai
 
 # 3. Install the rest of the dependencies
 RUN pip install --no-cache-dir -r requirements.txt
