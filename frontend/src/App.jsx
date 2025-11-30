@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Briefcase, Upload, User, Search, CheckCircle, XCircle, 
-  LogOut, Building2, MapPin, DollarSign, Clock, Cpu, Plus, X, Video, Loader2 
+  LogOut, Building2, MapPin, DollarSign, Clock, Cpu, Plus, X, Video, Loader2, Trash2
 } from 'lucide-react';
 import axios from 'axios';
 import InterviewSession from './components/InterviewSession';
@@ -193,6 +193,22 @@ export default function App() {
     }
   };
 
+  // --- NEW: DELETE APPLICATION FUNCTION ---
+  const handleDeleteApplication = async (appId, e) => {
+    e.stopPropagation(); // Prevent clicking the card
+    if (!confirm("Are you sure you want to delete this candidate?")) return;
+    
+    try {
+        await axios.delete(`${API_BASE}/recruiter/applications/${appId}`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        // Remove from UI immediately
+        setApplications(prev => prev.filter(app => app.application_id !== appId));
+    } catch (err) {
+        alert("Failed to delete application");
+    }
+  };
+
   // --- STUDENT ACTIONS ---
   const handleApply = async (jobId, file, domainId) => {
     if (!file) return;
@@ -332,11 +348,17 @@ export default function App() {
                 </div>
               ) : (
                 applications.map(app => (
-                  <Card key={app.application_id} className="relative overflow-hidden">
+                  <Card key={app.application_id} className="relative overflow-hidden group">
                     <div className="absolute top-0 right-0 px-4 py-2 bg-white/5 border-b border-l border-white/10 rounded-bl-2xl">
                       <span className="text-xs text-gray-400 mr-2">SCORE</span>
                       <span className={`text-lg font-bold ${app.overall_score > 70 ? 'text-emerald-400' : 'text-orange-400'}`}>{app.overall_score}</span>
                     </div>
+                    
+                    {/* DELETE BUTTON */}
+                    <button onClick={(e) => handleDeleteApplication(app.application_id, e)} className="absolute bottom-4 right-4 p-2 bg-red-500/10 text-red-400 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/20">
+                        <Trash2 className="w-4 h-4" />
+                    </button>
+
                     <div className="flex gap-4">
                       <div className="w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center font-bold text-xl">{app.full_name[0]}</div>
                       <div className="flex-1">

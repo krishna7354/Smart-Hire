@@ -345,6 +345,23 @@ async def auto_shortlist(job_id: int, u: dict = Depends(get_current_user)):
         return {"message": "Shortlisting complete"}
     finally: cursor.close(); conn.close()
 
+@app.delete("/api/recruiter/applications/{application_id}")
+async def delete_application(application_id: int, u: dict = Depends(get_current_user)):
+    """Delete a specific job application"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Delete from job_applications table
+        cursor.execute("DELETE FROM job_applications WHERE application_id = %s", (application_id,))
+        conn.commit()
+        return {"message": "Application deleted successfully"}
+    except Error as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
 # --- STUDENT ---
 @app.get("/api/student/domains")
 async def get_domains():
