@@ -26,6 +26,9 @@ import docx
 import os
 from dotenv import load_dotenv # Import this
 
+import psycopg2 
+from psycopg2.extras import RealDictCursor
+
 load_dotenv() # Load local .env file if it exists
 # =====================================================
 # CONFIGURATION
@@ -34,12 +37,12 @@ load_dotenv() # Load local .env file if it exists
 class Config:
     # --- ONLINE DATABASE CREDENTIALS ---
     # FILL THESE IN FROM YOUR HOSTING EMAIL
-    DB_HOST = 'sql12.freesqldatabase.com' # Example host, check your email!
-    DB_USER = 'sql12809679'               # Your DB Username (usually same as DB name)
-    DB_PASSWORD = '2pj28Hlfnc' # <--- PASTE PASSWORD HERE
-    DB_NAME = 'sql12809679'               # Your specific DB Name
-    DB_PORT = 3306                        # Standard MySQL port
-    
+    # DB_HOST = 'sql12.freesqldatabase.com' # Example host, check your email!
+    # DB_USER = 'sql12809679'               # Your DB Username (usually same as DB name)
+    # DB_PASSWORD = '2pj28Hlfnc' # <--- PASTE PASSWORD HERE
+    # DB_NAME = 'sql12809679'               # Your specific DB Name
+    # DB_PORT = 3306                        # Standard MySQL port
+    DATABASE_URL = os.getenv("DATABASE_URL")
     # JWT Config
     SECRET_KEY = 'your-super-secret-key-change-in-production-12345'
     ALGORITHM = 'HS256'
@@ -72,10 +75,11 @@ db_pool = pooling.MySQLConnectionPool(
 
 def get_db_connection():
     try:
-        return db_pool.get_connection()
-    except Error as e:
+        conn = psycopg2.connect(Config.DATABASE_URL)
+        return conn
+    except Exception as e:
         print(f"DB Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Database connection failed. Check Credentials.")
+        raise HTTPException(status_code=500, detail=f"Database connection failed.")
 
 # =====================================================
 # GEMINI SERVICE
@@ -236,14 +240,14 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 @app.post("/api/auth/register", response_model=Token)
 async def register(user: UserRegister):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute("SELECT user_id FROM users WHERE email = %s", (user.email,))
         if cursor.fetchone(): raise HTTPException(status_code=400, detail="Email exists")
         
         cursor.execute("INSERT INTO users (email, password_hash, role, full_name, phone) VALUES (%s, %s, %s, %s, %s)",
                        (user.email, hash_password(user.password), user.role, user.full_name, user.phone))
-        uid = cursor.lastrowid
+        uid = cursor.fetchone()['user_id']
         
         if user.role == 'student': cursor.execute("INSERT INTO students (user_id) VALUES (%s)", (uid,))
         else: cursor.execute("INSERT INTO recruiters (user_id, company_name) VALUES (%s, 'Not Set')", (uid,))
@@ -256,7 +260,7 @@ async def register(user: UserRegister):
 @app.post("/api/auth/login", response_model=Token)
 async def login(user: UserLogin):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute("SELECT user_id, password_hash, role FROM users WHERE email = %s", (user.email,))
         u = cursor.fetchone()
@@ -268,7 +272,7 @@ async def login(user: UserLogin):
 @app.put("/api/recruiter/profile")
 async def update_profile(p: RecruiterProfile, u: dict = Depends(get_current_user)):
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("UPDATE recruiters SET company_name=%s, company_website=%s, industry=%s, company_size=%s WHERE user_id=%s",
                    (p.company_name, p.company_website, p.industry, p.company_size, u['user_id']))
     conn.commit()
@@ -278,7 +282,7 @@ async def update_profile(p: RecruiterProfile, u: dict = Depends(get_current_user
 @app.post("/api/recruiter/jobs")
 async def create_job(data: JobWithCriteria, u: dict = Depends(get_current_user)):
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute("SELECT recruiter_id FROM recruiters WHERE user_id=%s", (u['user_id'],))
         rid = cursor.fetchone()[0]
@@ -294,7 +298,7 @@ async def create_job(data: JobWithCriteria, u: dict = Depends(get_current_user))
 @app.get("/api/recruiter/jobs")
 async def get_jobs(u: dict = Depends(get_current_user)):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("SELECT recruiter_id FROM recruiters WHERE user_id=%s", (u['user_id'],))
     rid = cursor.fetchone()['recruiter_id']
     cursor.execute("""SELECT jp.*, jd.domain_name, 
@@ -308,7 +312,7 @@ async def get_jobs(u: dict = Depends(get_current_user)):
 @app.get("/api/recruiter/jobs/{job_id}/applications")
 async def get_apps(job_id: int, u: dict = Depends(get_current_user)):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("""SELECT ja.*, u.full_name, u.email, r.btech_percentage, r.skills, r.objective_score
                       FROM job_applications ja JOIN students s ON ja.student_id = s.student_id
                       JOIN users u ON s.user_id = u.user_id JOIN resumes r ON ja.resume_id = r.resume_id
@@ -323,7 +327,7 @@ async def get_apps(job_id: int, u: dict = Depends(get_current_user)):
 @app.post("/api/recruiter/jobs/{job_id}/auto-shortlist")
 async def auto_shortlist(job_id: int, u: dict = Depends(get_current_user)):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute("SELECT r.resume_id, r.file_path FROM job_applications ja JOIN resumes r ON ja.resume_id = r.resume_id WHERE ja.job_id = %s AND r.parsing_status = 'pending'", (job_id,))
         pending = cursor.fetchall()
@@ -366,7 +370,7 @@ async def delete_application(application_id: int, u: dict = Depends(get_current_
 @app.get("/api/student/domains")
 async def get_domains():
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("SELECT * FROM job_domains WHERE is_active = TRUE")
     d = cursor.fetchall()
     conn.close()
@@ -375,7 +379,7 @@ async def get_domains():
 @app.post("/api/student/resume/upload")
 async def upload(file: UploadFile = File(...), domain_id: int = Form(...), u: dict = Depends(get_current_user)):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (u['user_id'],))
         sid = cursor.fetchone()['student_id']
@@ -391,7 +395,7 @@ async def upload(file: UploadFile = File(...), domain_id: int = Form(...), u: di
 @app.get("/api/student/jobs")
 async def get_avail_jobs(u: dict = Depends(get_current_user)):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("""SELECT jp.*, jd.domain_name, r.company_name FROM job_postings jp 
                       JOIN job_domains jd ON jp.domain_id = jd.domain_id 
                       JOIN recruiters r ON jp.recruiter_id = r.recruiter_id 
@@ -403,7 +407,7 @@ async def get_avail_jobs(u: dict = Depends(get_current_user)):
 @app.post("/api/student/apply/{job_id}")
 async def apply(job_id: int, resume_id: int, u: dict = Depends(get_current_user)):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (u['user_id'],))
         sid = cursor.fetchone()['student_id']

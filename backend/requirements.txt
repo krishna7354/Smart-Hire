@@ -1,6 +1,5 @@
 fastapi
 uvicorn
-mysql-connector-python
 python-multipart
 pydantic[email]
 bcrypt
@@ -8,3 +7,4 @@ pyjwt
 PyPDF2
 python-docx
 python-dotenv
+psycopg2-binary
