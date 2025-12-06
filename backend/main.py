@@ -1,5 +1,5 @@
 # =====================================================
-# SMART RECRUITMENT (ONLINE DB VERSION) - BACKEND
+# SMART RECRUITMENT (POSTGRES VERSION) - BACKEND
 # File: backend/main.py
 # =====================================================
 
@@ -8,8 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional, Dict, Any
-import mysql.connector
-from mysql.connector import Error, pooling
+import psycopg2 
+from psycopg2.extras import RealDictCursor
 import bcrypt
 import jwt
 from datetime import datetime, timedelta
@@ -23,55 +23,34 @@ import google.generativeai as genai
 import PyPDF2
 import docx
 
-import os
-from dotenv import load_dotenv # Import this
+from dotenv import load_dotenv 
+load_dotenv() 
 
-import psycopg2 
-from psycopg2.extras import RealDictCursor
-
-load_dotenv() # Load local .env file if it exists
 # =====================================================
 # CONFIGURATION
 # =====================================================
 
 class Config:
-    # --- ONLINE DATABASE CREDENTIALS ---
-    # FILL THESE IN FROM YOUR HOSTING EMAIL
-    # DB_HOST = 'sql12.freesqldatabase.com' # Example host, check your email!
-    # DB_USER = 'sql12809679'               # Your DB Username (usually same as DB name)
-    # DB_PASSWORD = '2pj28Hlfnc' # <--- PASTE PASSWORD HERE
-    # DB_NAME = 'sql12809679'               # Your specific DB Name
-    # DB_PORT = 3306                        # Standard MySQL port
+    # Database Config (Render PostgreSQL)
     DATABASE_URL = os.getenv("DATABASE_URL")
+    
     # JWT Config
     SECRET_KEY = 'your-super-secret-key-change-in-production-12345'
     ALGORITHM = 'HS256'
     ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 
     
     # Gemini API
-    #GEMINI_API_KEY = 'AIzaSyCNhVjAS0WGGCJUtkJzAo_0Y7Kv7gHJ2S0'
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    # File Upload
+    
+    # File Upload (Temporary Storage)
     UPLOAD_DIR = './uploads/resumes'
     MAX_FILE_SIZE = 5 * 1024 * 1024 
 
 Path(Config.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 
 # =====================================================
-# DATABASE POOL
+# DATABASE CONNECTION
 # =====================================================
-
-# Reduced pool size to 3 because free online hosts have strict connection limits
-db_pool = pooling.MySQLConnectionPool(
-    pool_name="recruitment_pool",
-    pool_size=3, 
-    pool_reset_session=True,
-    host=Config.DB_HOST,
-    user=Config.DB_USER,
-    password=Config.DB_PASSWORD,
-    database=Config.DB_NAME,
-    port=Config.DB_PORT
-)
 
 def get_db_connection():
     try:
@@ -79,7 +58,7 @@ def get_db_connection():
         return conn
     except Exception as e:
         print(f"DB Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Database connection failed.")
+        raise HTTPException(status_code=500, detail="Database connection failed.")
 
 # =====================================================
 # GEMINI SERVICE
@@ -89,26 +68,20 @@ genai.configure(api_key=Config.GEMINI_API_KEY)
 
 class GeminiService:
     def __init__(self):
-        # Priority list of models to try
-        self.models = [
-            'gemini-2.0-flash', 
-            'gemini-1.5-pro',
-            'gemini-pro'
-        ]
+        # Priority list (Update these if Google deprecates older models)
+        self.models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
 
     def generate(self, prompt: str):
         last_error = None
-        # Try each model until one works
         for model_name in self.models:
             try:
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content(prompt)
                 return response.text
             except Exception as e:
-                print(f"Model {model_name} failed: {e}")
                 last_error = e
                 continue
-        raise last_error # If all fail, raise error to trigger fallback questions
+        raise last_error
 
     def parse_resume_text(self, text: str):
         prompt = f"""
@@ -129,7 +102,6 @@ class GeminiService:
         }}
         """
         response = self.generate(prompt)
-        # Clean potential markdown
         clean_json = response.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_json)
 
@@ -245,16 +217,24 @@ async def register(user: UserRegister):
         cursor.execute("SELECT user_id FROM users WHERE email = %s", (user.email,))
         if cursor.fetchone(): raise HTTPException(status_code=400, detail="Email exists")
         
-        cursor.execute("INSERT INTO users (email, password_hash, role, full_name, phone) VALUES (%s, %s, %s, %s, %s)",
-                       (user.email, hash_password(user.password), user.role, user.full_name, user.phone))
+        # POSTGRES FIX: Use RETURNING user_id instead of lastrowid
+        cursor.execute(
+            """INSERT INTO users (email, password_hash, role, full_name, phone) 
+               VALUES (%s, %s, %s, %s, %s) RETURNING user_id""",
+            (user.email, hash_password(user.password), user.role, user.full_name, user.phone)
+        )
         uid = cursor.fetchone()['user_id']
         
-        if user.role == 'student': cursor.execute("INSERT INTO students (user_id) VALUES (%s)", (uid,))
-        else: cursor.execute("INSERT INTO recruiters (user_id, company_name) VALUES (%s, 'Not Set')", (uid,))
+        if user.role == 'student': 
+            cursor.execute("INSERT INTO students (user_id) VALUES (%s)", (uid,))
+        else: 
+            cursor.execute("INSERT INTO recruiters (user_id, company_name) VALUES (%s, 'Not Set')", (uid,))
         
         conn.commit()
         return Token(access_token=create_access_token({"user_id": uid, "role": user.role}), token_type="bearer", role=user.role, user_id=uid)
-    except Error as e: conn.rollback(); raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: 
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally: cursor.close(); conn.close()
 
 @app.post("/api/auth/login", response_model=Token)
@@ -272,7 +252,7 @@ async def login(user: UserLogin):
 @app.put("/api/recruiter/profile")
 async def update_profile(p: RecruiterProfile, u: dict = Depends(get_current_user)):
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor = conn.cursor()
     cursor.execute("UPDATE recruiters SET company_name=%s, company_website=%s, industry=%s, company_size=%s WHERE user_id=%s",
                    (p.company_name, p.company_website, p.industry, p.company_size, u['user_id']))
     conn.commit()
@@ -285,11 +265,16 @@ async def create_job(data: JobWithCriteria, u: dict = Depends(get_current_user))
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute("SELECT recruiter_id FROM recruiters WHERE user_id=%s", (u['user_id'],))
-        rid = cursor.fetchone()[0]
-        cursor.execute("INSERT INTO job_postings (recruiter_id, domain_id, job_title, job_description, job_type, location, salary_range, application_deadline, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'active')",
+        rid = cursor.fetchone()['recruiter_id']
+        
+        # POSTGRES FIX: RETURNING job_id
+        cursor.execute("""INSERT INTO job_postings (recruiter_id, domain_id, job_title, job_description, job_type, location, salary_range, application_deadline, status) 
+                          VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'active') RETURNING job_id""",
                        (rid, data.job.domain_id, data.job.job_title, data.job.job_description, data.job.job_type, data.job.location, data.job.salary_range, data.job.application_deadline))
-        jid = cursor.lastrowid
-        cursor.execute("INSERT INTO recruiter_criteria (job_id, min_10th_percentage, min_12th_percentage, min_btech_percentage, required_skills, min_certifications, evaluate_career_objective, min_objective_score) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        jid = cursor.fetchone()['job_id']
+        
+        cursor.execute("""INSERT INTO recruiter_criteria (job_id, min_10th_percentage, min_12th_percentage, min_btech_percentage, required_skills, min_certifications, evaluate_career_objective, min_objective_score) 
+                          VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                        (jid, data.criteria.min_10th_percentage, data.criteria.min_12th_percentage, data.criteria.min_btech_percentage, json.dumps(data.criteria.required_skills), data.criteria.min_certifications, data.criteria.evaluate_career_objective, data.criteria.min_objective_score))
         conn.commit()
         return {"message": "Job Created"}
@@ -344,6 +329,7 @@ async def auto_shortlist(job_id: int, u: dict = Depends(get_current_user)):
                 conn.commit()
             except Exception as e: print(f"Parse error {res['resume_id']}: {e}")
         
+        # Postgres uses CALL for procedures too
         cursor.execute("CALL auto_shortlist_candidates(%s)", (job_id,))
         conn.commit()
         return {"message": "Shortlisting complete"}
@@ -351,20 +337,13 @@ async def auto_shortlist(job_id: int, u: dict = Depends(get_current_user)):
 
 @app.delete("/api/recruiter/applications/{application_id}")
 async def delete_application(application_id: int, u: dict = Depends(get_current_user)):
-    """Delete a specific job application"""
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Delete from job_applications table
         cursor.execute("DELETE FROM job_applications WHERE application_id = %s", (application_id,))
         conn.commit()
-        return {"message": "Application deleted successfully"}
-    except Error as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cursor.close()
-        conn.close()
+        return {"message": "Deleted"}
+    finally: cursor.close(); conn.close()
 
 # --- STUDENT ---
 @app.get("/api/student/domains")
@@ -386,8 +365,12 @@ async def upload(file: UploadFile = File(...), domain_id: int = Form(...), u: di
         fname = f"{sid}_{datetime.now().timestamp()}.{file.filename.split('.')[-1]}"
         fpath = os.path.join(Config.UPLOAD_DIR, fname)
         with open(fpath, "wb") as b: shutil.copyfileobj(file.file, b)
-        cursor.execute("INSERT INTO resumes (student_id, domain_id, original_filename, file_path, parsing_status, upload_date) VALUES (%s, %s, %s, %s, 'pending', NOW())", (sid, domain_id, file.filename, fpath))
-        rid = cursor.lastrowid
+        
+        # POSTGRES FIX: RETURNING resume_id
+        cursor.execute("""INSERT INTO resumes (student_id, domain_id, original_filename, file_path, parsing_status, upload_date) 
+                          VALUES (%s, %s, %s, %s, 'pending', NOW()) RETURNING resume_id""", 
+                       (sid, domain_id, file.filename, fpath))
+        rid = cursor.fetchone()['resume_id']
         conn.commit()
         return {"resume_id": rid}
     finally: cursor.close(); conn.close()
@@ -411,14 +394,14 @@ async def apply(job_id: int, resume_id: int, u: dict = Depends(get_current_user)
     try:
         cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (u['user_id'],))
         sid = cursor.fetchone()['student_id']
-        cursor.execute("INSERT INTO job_applications (job_id, student_id, resume_id, application_status, overall_score, applied_at) VALUES (%s, %s, %s, 'applied', 0, NOW())", (job_id, sid, resume_id))
+        cursor.execute("""INSERT INTO job_applications (job_id, student_id, resume_id, application_status, overall_score, applied_at) 
+                          VALUES (%s, %s, %s, 'applied', 0, NOW())""", (job_id, sid, resume_id))
         conn.commit()
         return {"message": "Applied"}
     except: raise HTTPException(status_code=400, detail="Already applied")
     finally: cursor.close(); conn.close()
 
-# --- INTERVIEW ROUTES ---
-
+# --- INTERVIEW ---
 @app.post("/api/interview/generate-questions")
 async def generate_questions(req: InterviewRequest, u: dict = Depends(get_current_user)):
     prompt = f"""
@@ -431,11 +414,7 @@ async def generate_questions(req: InterviewRequest, u: dict = Depends(get_curren
         response = ai_service.generate(prompt)
         return json.loads(response.replace("```json", "").replace("```", "").strip())
     except:
-        return [
-            {"id": 1, "question": "Tell me about yourself.", "focus": "Intro"},
-            {"id": 2, "question": "What are your greatest strengths?", "focus": "Behavioral"},
-            {"id": 3, "question": "Describe a difficult project you worked on.", "focus": "Experience"}
-        ]
+        return [{"id": 1, "question": "Tell me about yourself.", "focus": "Intro"}]
 
 @app.post("/api/interview/evaluate")
 async def evaluate_answer(
@@ -444,26 +423,23 @@ async def evaluate_answer(
     audio: UploadFile = File(...),
     u: dict = Depends(get_current_user)
 ):
-    prompt = f"""
-    Evaluate this answer. Question: {question}. Answer: {transcript}.
-    Return ONLY raw JSON: {{ "score": 85, "feedback": "One sentence feedback." }}
-    """
+    prompt = f"Evaluate: {question} Answer: {transcript}. JSON: {{score: 85, feedback: 'text'}}"
     try:
         response = ai_service.generate(prompt)
         result = json.loads(response.replace("```json", "").replace("```", "").strip())
     except:
-        result = {"score": 70, "feedback": "Good effort. Keep practicing!"}
+        result = {"score": 70, "feedback": "Good effort."}
 
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (u['user_id'],))
-        sid = cursor.fetchone()[0]
-        cursor.execute("INSERT INTO mock_interviews (student_id, domain_name, question_text, answer_transcript, ai_score, ai_feedback) VALUES (%s, %s, %s, %s, %s, %s)",
+        sid = cursor.fetchone()[0] # Postgres tuple index
+        cursor.execute("""INSERT INTO mock_interviews (student_id, domain_name, question_text, answer_transcript, ai_score, ai_feedback) 
+                          VALUES (%s, %s, %s, %s, %s, %s)""",
                        (sid, "General", question, transcript, result['score'], result['feedback']))
         conn.commit()
     finally: cursor.close(); conn.close()
-    
     return result
 
 if __name__ == "__main__":
